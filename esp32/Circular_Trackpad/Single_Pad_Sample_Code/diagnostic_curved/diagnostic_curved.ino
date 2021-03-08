@@ -1,0 +1,556 @@
+ 
+ // Copyright (c) 2018 Cirque Corp. Restrictions apply. See: www.cirque.com/sw-license
+
+#include <SPI.h>
+#include "cirque_glidepoint.cpp"
+
+// ___ Using a Cirque TM0XX0XX w/ Curved Overlay and Arduino ___
+// This demonstration application is built to work with a Teensy 3.1/3.2 but it can easily be adapted to
+// work with Arduino-based systems.
+// When using with DK000013 development kit, connect sensor to the FFC connector
+// labeled 'Sensor0'.
+// This application connects to a TM0XX0XX circular touch pad via SPI. To verify that your touch pad is configured
+// for SPI-mode, make sure that R1 is populated with a 470k resistor (or whichever resistor connects pins 24 & 25 of the 1CA027 IC).
+// The pad is configured for Absolute mode tracking.  Touch data is sent in text format over USB CDC to
+// the host PC.  You can open a terminal window on the PC to the USB CDC port and see X, Y, and Z data
+// fill the window when you touch the sensor. Tools->Serial Monitor can be used to view touch data.
+// NOTE: all config values applied in this sample are meant for a module using REXT = 976kOhm
+
+//  Pinnacle TM0XX0XX with Arduino
+//  Hardware Interface
+//  GND
+//  +3.3V
+//  SCK = Pin 13
+//  MISO = Pin 12
+//  MOSI = Pin 11
+//  SS = Pin 8
+//  DR = Pin 7
+
+// Hardware pin-number labels
+#define SCK_PIN   18
+#define DIN_PIN   19 //miso
+#define DOUT_PIN  23 //mosi
+#define CS_PIN    2
+#define DR_PIN    5
+
+#define SDA_PIN   4
+#define SCL_PIN   15
+
+#define LED_0     25
+#define LED_1     20
+
+absData_t absoluteData;
+relData_t relativeData;
+double angle;
+double mag;
+double prev_angle;
+double potVal;
+
+//const uint16_t ZONESCALE = 256;
+//const uint16_t ROWS_Y = 6;
+//const uint16_t COLS_X = 8;
+
+// These values require tuning for optimal touch-response
+// Each element represents the Z-value below which is considered "hovering" in that XY region of the sensor.
+// The values present are not guaranteed to work for all HW configurations.
+const uint8_t ZVALUE_MAP[ROWS_Y][COLS_X] =
+{
+  {0, 0,  0,  0,  0,  0, 0, 0},
+  {0, 2,  3,  5,  5,  3, 2, 0},
+  {0, 3,  5, 15, 15,  5, 2, 0},
+  {0, 3,  5, 15, 15,  5, 3, 0},
+  {0, 2,  3,  5,  5,  3, 2, 0},
+  {0, 0,  0,  0,  0,  0, 0, 0},
+};
+
+
+char touch_state;
+char prev_touch_state;
+char press_valid;
+char press_counter;
+
+
+// setup() gets called once at power-up, sets up serial debug output and Cirque's Pinnacle ASIC.
+void setup()
+{
+  Serial.begin(115200);
+  while(!Serial); // needed for USB
+
+  pinMode(LED_0, OUTPUT);
+
+  Pinnacle_Init();
+
+  #ifdef ABSMODE
+    // These functions are required for use with thick overlays (curved)
+    setAdcAttenuation(ADC_ATTENUATE_2X);
+  #else
+    setAdcAttenuation(ADC_ATTENUATE_1X);
+  #endif
+  tuneEdgeSensitivity();
+
+  Serial.println();
+  Serial.println("X\tY\tZ\tBtn\tData");
+  Pinnacle_EnableFeed(true);
+}
+
+// loop() continuously checks to see if data-ready (DR) is high. If so, reads and reports touch data to terminal.
+void loop()
+{
+  if(DR_Asserted())
+  {
+    
+    #ifdef ABSMODE //absolute mode
+      Pinnacle_GetAbsolute(&absoluteData);
+      Pinnacle_CheckValidTouch(&absoluteData);     // Checks for "hover" caused by curved overlays
+      Serial.print("Absolute" );
+      Serial.print("X: ");
+      Serial.print(absoluteData.xValue);
+      Serial.print('\t');
+      Serial.print("Y: ");
+      Serial.print(absoluteData.yValue);
+      Serial.print('\t');
+      Serial.print("Z: ");
+      Serial.print(absoluteData.zValue);
+      Serial.print('\t');
+      prev_angle = angle;
+      angle = ComputeAngle(&absoluteData);
+      potVal = map(round(angle), 0, 360, 0, 127);
+      Serial.print("Angle: ");
+      Serial.print(angle);
+      Serial.print('\t');
+      Serial.print("Potentiometer Value: ");
+      Serial.print(potVal);
+      Serial.print('\t');
+      Serial.print("Direction Change: ");
+      if(angle > (prev_angle + 1)){
+        Serial.print("+1");
+      }
+      else if(angle < (prev_angle - 1)){
+        Serial.print("-1");\
+      }
+      else{
+        Serial.print("0");
+      }
+      mag = ComputeMagnetude(&absoluteData);
+      Serial.print('\t');
+      Serial.print("Magnitude: ");
+      Serial.print(mag);
+      Serial.print('\t');
+      Serial.print("Touch State: ");
+      prev_touch_state = touch_state;
+      if(Pinnacle_zIdlePacket(&absoluteData))
+      {
+        Serial.print("liftoff");
+        Serial.print('\t');
+        touch_state = 0;
+      }
+      else if(absoluteData.hovering)
+      {
+        Serial.println("hovering");
+        touch_state = 1;
+      }
+      else
+      {
+        Serial.print("valid");
+        Serial.print('\t');
+        touch_state = 1;
+      }
+      
+      if ( touch_state != prev_touch_state) 
+      {
+        if(touch_state > 0)
+        {
+          Serial.print("press");
+          //AssertSensorLED(HIGH);
+          
+        }
+        else
+        {
+          Serial.print("release");
+          //AssertSensorLED(LOW);
+        }
+      }
+      Serial.print('\t');
+      Serial.print(absoluteData.buttonFlags);
+      Serial.println(" ");
+    #endif
+
+    #ifndef ABSMODE //relative mode
+      Pinnacle_getRelative(&relativeData);
+      Serial.print("Relative ");
+      Serial.print("X ");
+      Serial.print(relativeData.xDelta);
+      Serial.print('\t');
+      Serial.print("Y ");
+      Serial.print(relativeData.yDelta);
+      Serial.print('\t');
+      Serial.print("Buttons 1: ");
+      Serial.print(relativeData.buttons & 1);
+      Serial.print(" 2: ");
+      Serial.print(relativeData.buttons & 2);
+      Serial.print(" 3: ");
+      Serial.print(relativeData.buttons & 4);
+      Serial.print('\t');
+      Serial.print("Wheel ");
+      Serial.println(relativeData.wheelCount);
+    #endif
+    
+  }
+}
+
+/*  Pinnacle-based TM0XX0XX Functions  */
+void Pinnacle_Init()
+{
+  RAP_Init();
+  DeAssert_CS();
+  pinMode(DR_PIN, INPUT);
+
+  // Host clears SW_CC flag
+  Pinnacle_ClearFlags();
+
+  // Host configures bits of registers 0x03 and 0x05
+  RAP_Write(0x03, SYSCONFIG_1);
+  RAP_Write(0x05, FEEDCONFIG_2);
+
+  // Host enables preferred output mode (absolute)
+  RAP_Write(0x04, FEEDCONFIG_1);
+
+  // Host sets z-idle packet count to 5 (default is 30)
+  RAP_Write(0x0A, Z_IDLE_COUNT);
+  Serial.println("Pinnacle Initialized...");
+}
+
+// Reads XYZ data from Pinnacle registers 0x14 through 0x17
+// Stores result in absData_t struct with xValue, yValue, and zValue members
+void Pinnacle_GetAbsolute(absData_t * result)
+{
+  uint8_t data[6] = { 0,0,0,0,0,0 };
+  RAP_ReadBytes(0x12, data, 6);
+
+  Pinnacle_ClearFlags();
+
+  result->buttonFlags = data[0] & 0x3F;
+  result->xValue = data[2] | ((data[4] & 0x0F) << 8);
+  result->yValue = data[3] | ((data[4] & 0xF0) << 4);
+  result->zValue = data[5] & 0x3F;
+
+  result->touchDown = result->xValue != 0;
+}
+
+// Reads X, Y, and Scroll-Wheel deltas from Pinnacle, as well as button states in relative mode.
+// NOTE: this function should be called immediately after DR is asserted (HIGH)
+void Pinnacle_getRelative(relData_t * result)
+{
+  uint8_t data[4] = {};
+  RAP_ReadBytes(0x12, data, 4);
+
+  Pinnacle_ClearFlags();
+
+  result->buttons = data[0] & 7;// & 0x07;
+  result->xDelta = (int8_t)data[1];
+  result->yDelta = (int8_t)data[2];
+  result->wheelCount = (int8_t)data[3];
+}
+
+// Checks touch data to see if it is a z-idle packet (all zeros)
+bool Pinnacle_zIdlePacket(absData_t * data)
+{
+  return data->xValue == 0 && data->yValue == 0 && data->zValue == 0;
+}
+
+// Clears Status1 register flags (SW_CC and SW_DR)
+void Pinnacle_ClearFlags()
+{
+  RAP_Write(0x02, 0x00);
+  delayMicroseconds(100);
+}
+
+// Enables/Disables the feed
+void Pinnacle_EnableFeed(bool feedEnable)
+{
+  uint8_t temp;
+
+  RAP_ReadBytes(0x04, &temp, 1);  // Store contents of FeedConfig1 register
+
+  if(feedEnable)
+  {
+    temp |= 0x01;                 // Set Feed Enable bit
+    RAP_Write(0x04, temp);
+  }
+  else
+  {
+    temp &= ~0x01;                // Clear Feed Enable bit
+    RAP_Write(0x04, temp);
+  }
+}
+
+
+/*  Curved Overlay Functions  */
+// Adjusts the feedback in the ADC, effectively attenuating the finger signal
+// By default, the the signal is maximally attenuated (ADC_ATTENUATE_4X for use with thin, flat overlays
+void setAdcAttenuation(uint8_t adcGain)
+{
+  uint8_t temp = 0x00;
+
+  //Serial.println();
+  //Serial.print(adcGain &= 0xC0, HEX);
+  //Serial.println("\t Reading ADC gain...");
+  ERA_ReadBytes(0x0187, &temp, 1);
+  //Serial.print(temp, HEX);
+  temp &= 0x3F; // clear top two bits
+  temp |= adcGain;
+  Serial.print(temp &= 0xC0, HEX);
+  //delayMicroseconds(100);
+  ERA_WriteByte(0x0187, temp);
+  //delayMicroseconds(100);
+  ERA_ReadBytes(0x0187, &temp, 1);
+  //Serial.print("ADC gain set to:\t");
+  //Serial.print(temp, HEX);
+  switch(temp)
+  {
+    case ADC_ATTENUATE_1X:
+      Serial.println(" (X/1)");
+      break;
+    case ADC_ATTENUATE_2X:
+      Serial.println(" (X/2)");
+      break;
+    case ADC_ATTENUATE_3X:
+      Serial.println(" (X/3)");
+      break;
+    case ADC_ATTENUATE_4X:
+      Serial.println(" (X/4)");
+      break;
+    default:
+      break;
+  }
+}
+
+// Changes thresholds to improve detection of fingers
+void tuneEdgeSensitivity()
+{
+  uint8_t temp = 0x00;
+
+  Serial.println();
+  Serial.println("Setting xAxis.WideZMin...");
+  ERA_ReadBytes(0x0149, &temp, 1);
+  Serial.print("Current value:\t");
+  Serial.println(temp, HEX);
+  ERA_WriteByte(0x0149,  0x04);
+  ERA_ReadBytes(0x0149, &temp, 1);
+  Serial.print("New value:\t");
+  Serial.println(temp, HEX);
+
+  Serial.println();
+  Serial.println("Setting yAxis.WideZMin...");
+  ERA_ReadBytes(0x0168, &temp, 1);
+  Serial.print("Current value:\t");
+  Serial.println(temp, HEX);
+  ERA_WriteByte(0x0168,  0x03);
+  ERA_ReadBytes(0x0168, &temp, 1);
+  Serial.print("New value:\t");
+  Serial.println(temp, HEX);
+}
+
+// This function identifies when a finger is "hovering" so your system can choose to ignore them.
+// Explanation: Consider the response of the sensor to be flat across it's area. The Z-sensitivity of the sensor projects this area
+// a short distance upwards above the surface of the sensor. Imagine it is a solid cylinder (wider than it is tall)
+// in which a finger can be detected and tracked. Adding a curved overlay will cause a user's finger to dip deeper in the middle, and higher
+// on the perimeter. If the sensitivity is tuned such that the sensing area projects to the highest part of the overlay, the lowest
+// point will likely have excessive sensitivity. This means the sensor can detect a finger that isn't actually contacting the overlay in the shallower area.
+// ZVALUE_MAP[][] stores a lookup table in which you can define the Z-value and XY position that is considered "hovering". Experimentation/tuning is required.
+// NOTE: Z-value output decreases to 0 as you move your finger away from the sensor, and it's maximum value is 0x63 (6-bits).
+void Pinnacle_CheckValidTouch(absData_t * touchData)
+{
+  uint32_t zone_x, zone_y;
+  //eliminate hovering
+  zone_x = touchData->xValue / ZONESCALE;
+  zone_y = touchData->yValue / ZONESCALE;
+  touchData->hovering = !(touchData->zValue > ZVALUE_MAP[zone_y][zone_x]);
+  //Serial.print("Touch zValue: ");
+  //Serial.print(touchData->zValue);
+  //Serial.print("\t");
+  //Serial.println(ZVALUE_MAP[zone_y][zone_x]);
+}
+
+/*  ERA (Extended Register Access) Functions  */
+// Reads <count> bytes from an extended register at <address> (16-bit address),
+// stores values in <*data>
+void ERA_ReadBytes(uint16_t address, uint8_t * data, uint16_t count)
+{
+  uint8_t ERAControlValue = 0xFF;
+
+  Pinnacle_EnableFeed(false); // Disable feed
+
+  RAP_Write(0x1C, (uint8_t)(address >> 8));     // Send upper byte of ERA address
+  RAP_Write(0x1D, (uint8_t)(address & 0x00FF)); // Send lower byte of ERA address
+
+  for(uint16_t i = 0; i < count; i++)
+  {
+    RAP_Write(0x1E, 0x05);  // Signal ERA-read (auto-increment) to Pinnacle
+
+    // Wait for status register 0x1E to clear
+    do
+    {
+      RAP_ReadBytes(0x1E, &ERAControlValue, 1);
+    } while(ERAControlValue != 0x00);
+
+    RAP_ReadBytes(0x1B, data + i, 1);
+
+    Pinnacle_ClearFlags();
+  }
+}
+
+// Writes a byte, <data>, to an extended register at <address> (16-bit address)
+void ERA_WriteByte(uint16_t address, uint8_t data)
+{
+  uint8_t ERAControlValue = 0xFF;
+  uint8_t top = address >> 8;
+  uint8_t bottom = address & 0x00FF;
+
+  Pinnacle_EnableFeed(false); // Disable feed
+  
+  RAP_Write(0x1B, data);      // Send data byte to be written
+
+  delayMicroseconds(100);
+  RAP_Write(0x1C, top);     // Upper byte of ERA address
+  
+  delayMicroseconds(100);
+  RAP_Write(0x1D, bottom); // Lower byte of ERA address
+
+  delayMicroseconds(100);
+  RAP_Write(0x1E, 0x02);  // Signal an ERA-write to Pinnacle
+
+  // Wait for status register 0x1E to clear
+  do
+  {
+    RAP_ReadBytes(0x1E, &ERAControlValue, 1);
+  } while(ERAControlValue != 0x00);
+
+  Pinnacle_ClearFlags();
+}
+
+/*  RAP Functions */
+
+void RAP_Init()
+{
+  pinMode(CS_PIN, OUTPUT);
+  SPI.begin();
+}
+
+// Reads <count> Pinnacle registers starting at <address>
+void RAP_ReadBytes(byte address, byte * data, byte count)
+{
+  byte cmdByte = READ_MASK | address;   // Form the READ command byte
+
+  SPI.beginTransaction(SPISettings(SPISPEEDMAX, MSBFIRST, SPI_MODE1));
+
+  Assert_CS();
+  SPI.transfer(cmdByte);  // Signal a RAP-read operation starting at <address>
+  SPI.transfer(0xFC);     // Filler byte
+  SPI.transfer(0xFC);     // Filler byte
+  for(byte i = 0; i < count; i++)
+  {
+    data[i] =  SPI.transfer(0xFC);  // Each subsequent SPI transfer gets another register's contents
+  }
+  DeAssert_CS();
+
+  SPI.endTransaction();
+}
+
+// Writes single-byte <data> to <address>
+void RAP_Write(byte address, byte data)
+{
+  byte cmdByte = WRITE_MASK | address;  // Form the WRITE command byte
+
+  SPI.beginTransaction(SPISettings(SPISPEEDMAX, MSBFIRST, SPI_MODE1));
+
+  Assert_CS();
+  SPI.transfer(cmdByte);  // Signal a write to register at <address>
+  SPI.transfer(data);    // Send <value> to be written to register
+  DeAssert_CS();
+
+  SPI.endTransaction();
+}
+
+/*  Logical Scaling Functions */
+// Clips raw coordinates to "reachable" window of sensor
+// NOTE: values outside this window can only appear as a result of noise
+void ClipCoordinates(absData_t * coordinates)
+{
+  if(coordinates->xValue < PINNACLE_X_LOWER)
+  {
+    coordinates->xValue = PINNACLE_X_LOWER;
+  }
+  else if(coordinates->xValue > PINNACLE_X_UPPER)
+  {
+    coordinates->xValue = PINNACLE_X_UPPER;
+  }
+  if(coordinates->yValue < PINNACLE_Y_LOWER)
+  {
+    coordinates->yValue = PINNACLE_Y_LOWER;
+  }
+  else if(coordinates->yValue > PINNACLE_Y_UPPER)
+  {
+    coordinates->yValue = PINNACLE_Y_UPPER;
+  }
+}
+
+// Scales data to desired X & Y resolution
+void ScaleData(absData_t * coordinates, uint16_t xResolution, uint16_t yResolution)
+{
+  uint32_t xTemp = 0;
+  uint32_t yTemp = 0;
+
+  ClipCoordinates(coordinates);
+
+  xTemp = coordinates->xValue;
+  yTemp = coordinates->yValue;
+
+  // translate coordinates to (0, 0) reference by subtracting edge-offset
+  xTemp -= PINNACLE_X_LOWER;
+  yTemp -= PINNACLE_Y_LOWER;
+
+  // scale coordinates to (xResolution, yResolution) range
+  coordinates->xValue = (uint16_t)(xTemp * xResolution / PINNACLE_X_RANGE);
+  coordinates->yValue = (uint16_t)(yTemp * yResolution / PINNACLE_Y_RANGE);
+}
+
+double ComputeAngle(absData_t * touchData)
+{
+  double x = (double) touchData->xValue;
+  double y = (double) touchData->yValue * 4 / 3;
+  double angle = atan2 ((1024-y), (x-1024)) * 180 / PI;     
+  angle  = angle > 0 ? angle : (360 + angle);
+  return angle;
+}
+
+double ComputeMagnetude(absData_t * touchData)
+{
+  double x = (double) touchData->xValue;
+  double y = (double) touchData->yValue * 4 / 3;
+  x = x - 1024;
+  y = 1024 - y;
+  return sqrt((x*x) + (y*y));
+}
+
+
+/*  I/O Functions */
+void Assert_CS()
+{
+  digitalWrite(CS_PIN, LOW);
+}
+
+void DeAssert_CS()
+{
+  digitalWrite(CS_PIN, HIGH);
+}
+
+void AssertSensorLED(bool state)
+{
+  digitalWrite(LED_0, !state);
+}
+
+bool DR_Asserted()
+{
+  return digitalRead(DR_PIN);
+}
