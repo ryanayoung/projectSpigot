@@ -1,0 +1,31 @@
+board.A0
+board.A1
+board.A2
+board.A3
+board.A4
+board.A5
+board.ACCELEROMETER_GYRO_INTERRUPT board.D3
+board.AREF
+board.BATTERY board.VOLTAGE_MONITOR
+board.BLUE_LED
+board.D10
+board.D11
+board.D12
+board.D13 board.L board.RED_LED
+board.D2 board.NFC2
+board.D5
+board.D6
+board.D9
+board.MICROPHONE_CLOCK
+board.MICROPHONE_DATA
+board.MISO
+board.MOSI
+board.NEOPIXEL
+board.NFC1
+board.PROXIMITY_LIGHT_INTERRUPT
+board.RX
+board.SCK
+board.SCL
+board.SDA
+board.SWITCH
+board.TX
